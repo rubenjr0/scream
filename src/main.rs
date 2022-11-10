@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256, Sha512};
 enum HashMode {
     Sha256,
     Sha512,
+    MD5,
 }
 
 #[derive(Parser)]
@@ -48,6 +49,7 @@ fn gen_hash(data: &[u8], hash_mode: HashMode) -> Vec<u8> {
             hasher.update(data);
             hasher.finalize().to_vec()
         }
+        HashMode::MD5 => md5::compute(data).to_vec(),
     }
 }
 
