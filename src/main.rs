@@ -1,10 +1,8 @@
-use std::sync::{Arc, RwLock};
+use std::{sync::Arc, time::Instant};
 
-use rayon::ThreadPoolBuilder;
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
-    time::Instant,
 };
 
 use tokio_stream::{wrappers::LinesStream, Stream};
@@ -27,6 +25,7 @@ struct Args {
     #[arg(value_enum)]
     hash_mode: HashMode,
     wordlist_path: String,
+    chunk_size: Option<usize>,
 }
 
 async fn read_hash(path: &str) -> Result<Vec<u8>> {
@@ -67,54 +66,34 @@ async fn main() -> Result<()> {
     let hash = Arc::new(hash);
 
     let read_time = Instant::now();
-    let wordlist = read_wordlist(&args.wordlist_path).await?;
+    let mut wordlist = read_wordlist(&args.wordlist_path).await?;
     let read_time = read_time.elapsed();
     println!(
-        "Wordlinst stream {} read in {read_time:?}",
+        "Wordlist stream {} read in {read_time:?}",
         args.wordlist_path
     );
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let tx = Some(tx);
-    let tx = RwLock::new(tx);
-    let tx = Arc::new(tx);
-
-    let thread_pool = ThreadPoolBuilder::new().build()?;
-
     let crack_time = Instant::now();
-    let mut chunks = wordlist.chunks(u16::MAX as usize);
-    while let Some(chunk) = chunks.next().await {
-        if tx.clone().read().unwrap().is_none() {
-            break;
-        }
-        let tx = tx.clone();
-        let hash = hash.clone();
-        thread_pool.spawn(move || {
-            for password in chunk {
-                if tx.read().unwrap().is_some() {
-                    let h = gen_hash(password.as_bytes(), args.hash_mode);
-                    if &h == hash.as_ref() {
-                        println!("{password} -> {}", hex::encode(&h));
-                        if let Some(sender) = tx.write().unwrap().take() {
-                            sender.send(password).unwrap();
-                            println!("Breaking");
-                            return;
-                        }
-                    }
-                } else {
-                    return;
-                }
-            }
-        });
-    }
-    let crack_time = crack_time.elapsed();
 
-    match rx.await {
-        Ok(password) => {
-            println!("Password found for the given hash: {password} in {crack_time:?}")
+    let found = loop {
+        if let Some(password) = wordlist.next().await {
+            if gen_hash(password.as_bytes(), args.hash_mode) == *hash {
+                break Some(password);
+            }
+        } else {
+            break None;
         }
-        Err(err) => println!("No password found for the given hash: {err}"),
+    };
+
+    match found {
+        Some(password) => {
+            println!("Password found for the given hash: {password}")
+        }
+        _ => println!("No password found for the given hash"),
     }
+
+    let crack_time = crack_time.elapsed();
+    println!("Done in {crack_time:?}");
 
     Ok(())
 }
