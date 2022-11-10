@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use rayon::ThreadPoolBuilder;
 use tokio::{
     fs::File,
@@ -62,6 +64,7 @@ async fn read_wordlist(path: &str) -> Result<impl Stream<Item = String>> {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let hash = read_hash(&args.hash_path).await?;
+    let hash = Arc::new(hash);
 
     let read_time = Instant::now();
     let wordlist = read_wordlist(&args.wordlist_path).await?;
@@ -72,23 +75,27 @@ async fn main() -> Result<()> {
     );
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut tx = Some(tx);
+    let tx = Some(tx);
+    let tx = RwLock::new(tx);
+    let tx = Arc::new(tx);
 
-    let tp = ThreadPoolBuilder::new().build()?;
+    let thread_pool = ThreadPoolBuilder::new().build()?;
 
     let crack_time = Instant::now();
     let mut chunks = wordlist.chunks(u16::MAX as usize);
     while let Some(chunk) = chunks.next().await {
-        if tx.is_none() {
+        if tx.clone().read().unwrap().is_none() {
             break;
         }
-        tp.install(|| {
+        let tx = tx.clone();
+        let hash = hash.clone();
+        thread_pool.spawn(move || {
             for password in chunk {
-                if tx.is_some() {
+                if tx.read().unwrap().is_some() {
                     let h = gen_hash(password.as_bytes(), args.hash_mode);
-                    if h == hash {
+                    if &h == hash.as_ref() {
                         println!("{password} -> {}", hex::encode(&h));
-                        if let Some(sender) = tx.take() {
+                        if let Some(sender) = tx.write().unwrap().take() {
                             sender.send(password).unwrap();
                             println!("Breaking");
                             return;
