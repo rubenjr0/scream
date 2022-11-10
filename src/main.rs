@@ -1,13 +1,15 @@
+use rayon::ThreadPoolBuilder;
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     time::Instant,
 };
 
-use tokio_stream::{wrappers::LinesStream, Stream, StreamExt};
+use tokio_stream::{wrappers::LinesStream, Stream};
 
 use clap::{Parser, ValueEnum};
 use eyre::Result;
+use futures::StreamExt;
 use hex::decode;
 use sha2::{Digest, Sha256, Sha512};
 
@@ -52,30 +54,59 @@ fn gen_hash(data: &[u8], hash_mode: HashMode) -> Vec<u8> {
 async fn read_wordlist(path: &str) -> Result<impl Stream<Item = String>> {
     let f = File::open(path).await?;
     let reader = BufReader::new(f);
-    Ok(LinesStream::new(reader.lines()).map(|s| s.unwrap()))
+    let line_stream = LinesStream::new(reader.lines()).map(|l| l.unwrap());
+    Ok(line_stream)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let hash = read_hash(&args.hash_path).await?;
+
     let read_time = Instant::now();
     let wordlist = read_wordlist(&args.wordlist_path).await?;
     let read_time = read_time.elapsed();
-    println!("Wordlinst {} read in {read_time:?}", args.wordlist_path);
-    let crack_time = Instant::now();
-    let password = wordlist
-        .skip_while(|password| gen_hash(password.as_bytes(), args.hash_mode) != hash)
-        .next()
-        .await;
+    println!(
+        "Wordlinst stream {} read in {read_time:?}",
+        args.wordlist_path
+    );
 
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut tx = Some(tx);
+
+    let tp = ThreadPoolBuilder::new().build()?;
+
+    let crack_time = Instant::now();
+    let mut chunks = wordlist.chunks(u16::MAX as usize);
+    while let Some(chunk) = chunks.next().await {
+        if tx.is_none() {
+            break;
+        }
+        tp.install(|| {
+            for password in chunk {
+                if tx.is_some() {
+                    let h = gen_hash(password.as_bytes(), args.hash_mode);
+                    if h == hash {
+                        println!("{password} -> {}", hex::encode(&h));
+                        if let Some(sender) = tx.take() {
+                            sender.send(password).unwrap();
+                            println!("Breaking");
+                            return;
+                        }
+                    }
+                } else {
+                    return;
+                }
+            }
+        });
+    }
     let crack_time = crack_time.elapsed();
 
-    match password {
-        Some(password) => {
+    match rx.await {
+        Ok(password) => {
             println!("Password found for the given hash: {password} in {crack_time:?}")
         }
-        None => println!("No password found for the given hash"),
+        Err(err) => println!("No password found for the given hash: {err}"),
     }
 
     Ok(())

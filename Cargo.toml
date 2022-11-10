@@ -9,6 +9,11 @@ edition = "2021"
 eyre = "0.6.8"
 sha2 = "0.10.6"
 hex = "0.4.3"
+rayon = "1.5.3"
+futures = "0.3.25"
 clap = { version = "4.0", features = ["derive"] }
 tokio = { version = "1.21.2", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["io-util"] }
+
+[profile.release]
+lto = true
