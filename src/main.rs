@@ -25,7 +25,6 @@ struct Args {
     #[arg(value_enum)]
     hash_mode: HashMode,
     wordlist_path: String,
-    chunk_size: Option<usize>,
 }
 
 async fn read_hash(path: &str) -> Result<Vec<u8>> {
@@ -74,7 +73,6 @@ async fn main() -> Result<()> {
     );
 
     let crack_time = Instant::now();
-
     let found = loop {
         if let Some(password) = wordlist.next().await {
             if gen_hash(password.as_bytes(), args.hash_mode) == *hash {
@@ -84,16 +82,14 @@ async fn main() -> Result<()> {
             break None;
         }
     };
+    let crack_time = crack_time.elapsed();
 
     match found {
         Some(password) => {
-            println!("Password found for the given hash: {password}")
+            println!("Password found in {crack_time:?}: {password}")
         }
-        _ => println!("No password found for the given hash"),
+        _ => println!("No password found for the given hash, search took {crack_time:?}"),
     }
-
-    let crack_time = crack_time.elapsed();
-    println!("Done in {crack_time:?}");
 
     Ok(())
 }
