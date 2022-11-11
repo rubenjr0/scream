@@ -1,8 +1,12 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
+    time::Instant,
+};
 
 use tokio::{
     fs::File,
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    io::{AsyncBufReadExt, BufReader},
 };
 
 use tokio_stream::{wrappers::LinesStream, Stream};
@@ -10,7 +14,6 @@ use tokio_stream::{wrappers::LinesStream, Stream};
 use clap::{Parser, ValueEnum};
 use eyre::Result;
 use futures::StreamExt;
-use hex::decode;
 use sha2::{Digest, Sha256, Sha512};
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -22,19 +25,19 @@ enum HashMode {
 
 #[derive(Parser)]
 struct Args {
-    hash_path: String,
+    hashes_path: String,
     #[arg(value_enum)]
     hash_mode: HashMode,
     wordlist_path: String,
 }
 
-async fn read_hash(path: &str) -> Result<Vec<u8>> {
-    let f = File::open(path).await?;
-    let mut reader = BufReader::new(f);
-    let mut buffer = String::new();
-    reader.read_to_string(&mut buffer).await?;
-    let hash = buffer.trim();
-    Ok(decode(hash)?)
+async fn read_hashes(path: &str) -> Result<HashMap<Vec<u8>, bool>> {
+    let hashes = read_file_stream(path).await?;
+    let hashes: HashSet<Vec<u8>> = hashes
+        .map(|hash| hex::decode(hash).unwrap())
+        .collect()
+        .await;
+    Ok(hashes.into_iter().map(|hash| (hash, false)).collect())
 }
 
 fn gen_hash(data: &[u8], hash_mode: HashMode) -> Vec<u8> {
@@ -53,7 +56,7 @@ fn gen_hash(data: &[u8], hash_mode: HashMode) -> Vec<u8> {
     }
 }
 
-async fn read_wordlist(path: &str) -> Result<impl Stream<Item = String>> {
+async fn read_file_stream(path: &str) -> Result<impl Stream<Item = String>> {
     let f = File::open(path).await?;
     let reader = BufReader::new(f);
     let line_stream = LinesStream::new(reader.lines()).map(|l| l.unwrap());
@@ -63,34 +66,48 @@ async fn read_wordlist(path: &str) -> Result<impl Stream<Item = String>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let hash = read_hash(&args.hash_path).await?;
-    let hash = Arc::new(hash);
+    let mut hashes = read_hashes(&args.hashes_path).await?;
+    println!("{} hashes loaded", hashes.len());
 
     let read_time = Instant::now();
-    let mut wordlist = read_wordlist(&args.wordlist_path).await?;
+    let mut wordlist = read_file_stream(&args.wordlist_path).await?;
     let read_time = read_time.elapsed();
     println!(
         "Wordlist stream {} read in {read_time:?}",
         args.wordlist_path
     );
 
+    let mut left = hashes.iter().filter(|(_, found)| !*found).count();
+    let mut stdout_lock = std::io::stdout().lock();
     let crack_time = Instant::now();
-    let found = loop {
-        if let Some(password) = wordlist.next().await {
-            if gen_hash(password.as_bytes(), args.hash_mode) == *hash {
-                break Some(password);
-            }
-        } else {
-            break None;
+    loop {
+        if left == 0 {
+            break;
         }
-    };
+        if let Some(password) = wordlist.next().await {
+            for (hash, found) in hashes.iter_mut().filter(|(_, found)| !**found) {
+                if &gen_hash(password.as_bytes(), args.hash_mode) == hash {
+                    writeln!(
+                        stdout_lock,
+                        "{} - {password:<16} [{:^16?}]",
+                        hex::encode(hash),
+                        crack_time.elapsed()
+                    )?;
+                    stdout_lock.flush()?;
+                    *found = true;
+                    left -= 1;
+                }
+            }
+        }
+    }
     let crack_time = crack_time.elapsed();
 
-    match found {
-        Some(password) => {
-            println!("Password found in {crack_time:?}: {password}")
+    if left > 0 {
+        let pending = hashes.into_iter().filter(|(_, found)| !found);
+        println!("\nNo password found for the given hashes (search took {crack_time:6?}):");
+        for (hash, _) in pending {
+            println!("> {}", hex::encode(hash));
         }
-        _ => println!("No password found for the given hash, search took {crack_time:?}"),
     }
 
     Ok(())
