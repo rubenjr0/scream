@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    io::Write,
-    time::Instant,
-};
+use std::{collections::HashSet, io::Write, time::Instant};
 
 use tokio::{
     fs::File,
@@ -15,6 +11,8 @@ use clap::{Parser, ValueEnum};
 use eyre::Result;
 use futures::StreamExt;
 use sha2::{Digest, Sha256, Sha512};
+
+type Hash = Vec<u8>;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum HashMode {
@@ -31,16 +29,17 @@ struct Args {
     wordlist_path: String,
 }
 
-async fn read_hashes(path: &str) -> Result<HashMap<Vec<u8>, bool>> {
+async fn read_hashes(path: &str) -> Result<Vec<Hash>> {
     let hashes = read_file_stream(path).await?;
-    let hashes: HashSet<Vec<u8>> = hashes
+    let hashes: HashSet<Hash> = hashes
         .map(|hash| hex::decode(hash).unwrap())
         .collect()
         .await;
-    Ok(hashes.into_iter().map(|hash| (hash, false)).collect())
+    Ok(hashes.into_iter().collect())
 }
 
-fn gen_hash(data: &[u8], hash_mode: HashMode) -> Vec<u8> {
+#[inline]
+fn gen_hash(data: &[u8], hash_mode: HashMode) -> Hash {
     match hash_mode {
         HashMode::Sha256 => {
             let mut hasher = Sha256::new();
@@ -77,35 +76,35 @@ async fn main() -> Result<()> {
         args.wordlist_path
     );
 
-    let mut left = hashes.iter().filter(|(_, found)| !*found).count();
     let mut stdout_lock = std::io::stdout().lock();
     let crack_time = Instant::now();
     loop {
-        if left == 0 {
+        if hashes.len() == 0 {
             break;
         }
         if let Some(password) = wordlist.next().await {
-            for (hash, found) in hashes.iter_mut().filter(|(_, found)| !**found) {
+            for (hash_idx, hash) in hashes.iter().enumerate() {
                 if &gen_hash(password.as_bytes(), args.hash_mode) == hash {
                     writeln!(
                         stdout_lock,
-                        "{} - {password:<16} [{:^16?}]",
+                        "{} --- {password:<16} [{:>14?}]",
                         hex::encode(hash),
                         crack_time.elapsed()
                     )?;
                     stdout_lock.flush()?;
-                    *found = true;
-                    left -= 1;
+                    hashes.remove(hash_idx);
+                    break;
                 }
             }
+        } else {
+            break;
         }
     }
     let crack_time = crack_time.elapsed();
 
-    if left > 0 {
-        let pending = hashes.into_iter().filter(|(_, found)| !found);
+    if hashes.len() > 0 {
         println!("\nNo password found for the given hashes (search took {crack_time:6?}):");
-        for (hash, _) in pending {
+        for hash in hashes {
             println!("> {}", hex::encode(hash));
         }
     }
