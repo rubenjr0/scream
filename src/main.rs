@@ -38,7 +38,7 @@ async fn read_hash(path: &str) -> Result<Hash> {
     let mut r = BufReader::new(f);
     let mut hash = String::new();
     r.read_to_string(&mut hash).await?;
-    Ok(hex::decode(hash).unwrap())
+    Ok(hex::decode(hash.trim())?)
 }
 
 async fn read_wordlist(path: &str) -> Result<Vec<impl Stream<Item = String>>> {
