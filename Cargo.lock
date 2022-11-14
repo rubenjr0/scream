@@ -420,6 +420,7 @@ dependencies = [
  "futures",
  "hex",
  "md5",
+ "num_cpus",
  "sha2",
  "tokio",
  "tokio-stream",
