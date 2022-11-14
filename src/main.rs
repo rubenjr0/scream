@@ -91,6 +91,9 @@ async fn main() -> Result<()> {
 
     let crack_time = Instant::now();
     let mut tasks = Vec::new();
+    // TODO:
+    // 1. Extract to function and add good multi hash support
+    // 2. Extract to 2 separate functions, one for single hash, one for multi hash
     for mut chunk in wordlist {
         let found = found.clone();
         let hash = hash.clone();
