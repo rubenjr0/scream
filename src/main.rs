@@ -11,7 +11,7 @@ use tokio::{
 
 use tokio_stream::{wrappers::LinesStream, Stream};
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use eyre::Result;
 use futures::{future::try_join_all, StreamExt};
 use sha2::{Digest, Sha256, Sha512};
@@ -25,12 +25,21 @@ enum HashMode {
     MD5,
 }
 
+#[derive(Subcommand)]
+enum CrackMode {
+    Dictionary { path: String },
+    Bruteforce,
+}
+
 #[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+#[command(propagate_version = true)]
 struct Args {
     hash_path: String,
     #[arg(value_enum)]
     hash_mode: HashMode,
-    wordlist_path: String,
+    #[command(subcommand)]
+    crack_mode: CrackMode,
 }
 
 async fn read_hash(path: &str) -> Result<Hash> {
@@ -74,26 +83,11 @@ fn gen_hash(data: &[u8], hash_mode: HashMode) -> Hash {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-    let hash = read_hash(&args.hash_path).await?;
-    let hash = Arc::new(hash);
-    let found = Arc::new(AtomicBool::new(false));
-
-    let read_time = Instant::now();
-    let wordlist = read_wordlist(&args.wordlist_path).await?;
-    let read_time = read_time.elapsed();
-    println!(
-        "Wordlist streams for {} read in {read_time:?}",
-        args.wordlist_path
-    );
-
-    let crack_time = Instant::now();
+async fn crack_with_wordlist(hash: Hash, wordlist_path: &str, hash_mode: HashMode) -> Result<()> {
+    let wordlist = read_wordlist(wordlist_path).await?;
     let mut tasks = Vec::new();
-    // TODO:
-    // 1. Extract to function and add good multi hash support
-    // 2. Extract to 2 separate functions, one for single hash, one for multi hash
+    let found = Arc::new(AtomicBool::new(false));
+    let crack_time = Instant::now();
     for mut chunk in wordlist {
         let found = found.clone();
         let hash = hash.clone();
@@ -103,7 +97,7 @@ async fn main() -> Result<()> {
                     break;
                 }
                 if let Some(password) = chunk.next().await {
-                    if gen_hash(password.as_bytes(), args.hash_mode) == *hash {
+                    if gen_hash(password.as_bytes(), hash_mode) == *hash {
                         println!(
                             "{} --- {password:<16} [{:>14?}]",
                             hex::encode(&*hash),
@@ -121,6 +115,22 @@ async fn main() -> Result<()> {
     let crack_time = crack_time.elapsed();
     if !found.load(std::sync::atomic::Ordering::Relaxed) {
         println!("No password found for the given hash (search took {crack_time:6?}):");
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+    let hash = read_hash(&args.hash_path).await?;
+    // let hash = Arc::new(hash);
+
+    // TODO:
+    // 1. Extract to function and add good multi hash support
+    // 2. Extract to 2 separate functions, one for single hash, one for multi hash
+    match args.crack_mode {
+        CrackMode::Dictionary { path } => crack_with_wordlist(hash, &path, args.hash_mode).await?,
+        CrackMode::Bruteforce => todo!("implement bruteforce"),
     }
 
     Ok(())
